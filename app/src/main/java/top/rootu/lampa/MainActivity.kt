@@ -110,11 +110,12 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                                     val pos = it.getIntExtra("position", 0)
                                     val dur = it.getIntExtra("duration", 0)
                                     if (pos > 0 && dur > 0) {
+                                        val ended = dur / pos < 1.02 // (assume 98% equals Ended)
                                         Log.i(
                                             TAG,
                                             "Playback stopped [position=$pos, duration=$dur]"
                                         )
-                                        resultPlayer(videoUrl, pos, dur, false)
+                                        resultPlayer(videoUrl, pos, dur, ended)
                                     } else {
                                         Log.e(TAG, "Invalid state [position=$pos, duration=$dur]")
                                     }
@@ -140,8 +141,9 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                             val pos = it.getLongExtra("extra_position", 0L)
                             val dur = it.getLongExtra("extra_duration", 0L)
                             if (pos > 0L) {
+                                val ended = dur / pos < 1.02 // (assume 98% equals Ended)
                                 Log.i(TAG, "Playback stopped [position=$pos, duration=$dur]")
-                                resultPlayer(videoUrl, pos.toInt(), dur.toInt(), false)
+                                resultPlayer(videoUrl, pos.toInt(), dur.toInt(), ended)
                             } else {
                                 if (dur == 0L && pos == 0L) {
                                     Log.i(TAG, "Playback completed")
@@ -163,8 +165,9 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                             val pos = it.getIntExtra("position", 0)
                             val dur = it.getIntExtra("duration", 0)
                             if (pos > 0 && dur > 0) {
+                                val ended = dur / pos < 1.02 // (assume 98% equals Ended)
                                 Log.i(TAG, "Playback stopped [position=$pos, duration=$dur]")
-                                resultPlayer(videoUrl, pos, dur, false)
+                                resultPlayer(videoUrl, pos, dur, ended)
                             }
                         }
                         RESULT_ERROR -> {
@@ -281,7 +284,7 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                                     "{" +
                                     "'again': 'Начать с начала'," +
                                     "'continue': 'Продолжить'," +
-                                    "'ask': 'На усмотрение плеера'" +
+                                    "'ask': 'Спрашивать'" +
                                     "}," +
                                     "'${playerTimeCode}'"
                         )
@@ -668,8 +671,10 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                         intent.putExtra("position", videoPosition.toInt())
                         intent.putExtra("startfrom", videoPosition.toInt())
                     }
-                    intent.putExtra("forcedirect", true)
-                    intent.putExtra("forceresume", true)
+                    if (playerTimeCode == "ask") {
+                        intent.putExtra("forcedirect", true)
+                        intent.putExtra("forceresume", true)
+                    }
                 }
                 else -> {
                     intent.setPackage(SELECTED_PLAYER)
