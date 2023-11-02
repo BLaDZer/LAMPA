@@ -2,8 +2,10 @@ package top.rootu.lampa
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.text.TextUtils
 import android.util.Log
+import android.webkit.WebView
 import org.json.JSONException
 import org.json.JSONObject
 import org.xwalk.core.JavascriptInterface
@@ -11,7 +13,7 @@ import org.xwalk.core.XWalkView
 import top.rootu.lampa.net.Http
 import kotlin.system.exitProcess
 
-class AndroidJS(var mainActivity: MainActivity, var XWalkView: XWalkView) {
+class AndroidJS(private val mainActivity: MainActivity, private val xWalkView: XWalkView?, private val wv: WebView?) {
     @JavascriptInterface
     fun StorageChange(str: String) {
         val eo: JSONObject = if (str == "\"\"") {
@@ -45,7 +47,7 @@ class AndroidJS(var mainActivity: MainActivity, var XWalkView: XWalkView) {
 
     @JavascriptInterface
     fun appVersion(): String {
-        return BuildConfig.VERSION_NAME + "-" + BuildConfig.VERSION_CODE
+        return BuildConfig.VERSION_NAME + "-" + "777" // + BuildConfig.VERSION_CODE
     }
 
     @JavascriptInterface
@@ -202,7 +204,10 @@ class AndroidJS(var mainActivity: MainActivity, var XWalkView: XWalkView) {
                     mainActivity.runOnUiThread {
                         val js = ("Lampa.Android.httpCall("
                                 + returnI.toString() + ", '" + result + "')")
-                        XWalkView.evaluateJavascript(js) { value -> Log.i("JSRV", value!!) }
+                        xWalkView?.evaluateJavascript(js) { value -> Log.i("JSRV", value!!) }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                            wv?.evaluateJavascript(js) { value -> Log.i("JSRV", value!!) }
+                        }
                     }
                 }
             }

@@ -19,10 +19,18 @@ import android.util.Log
 import android.view.*
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import android.webkit.ConsoleMessage
+import android.webkit.JsResult
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.addCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -32,6 +40,7 @@ import androidx.appcompat.widget.AppCompatEditText
 import androidx.appcompat.widget.AppCompatImageButton
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.ContextCompat.startActivity
 import com.google.android.material.progressindicator.CircularProgressIndicator
 import net.gotev.speech.*
 import net.gotev.speech.ui.SpeechProgressView
@@ -45,12 +54,14 @@ import top.rootu.lampa.helpers.PermHelpers.hasMicPermissions
 import top.rootu.lampa.helpers.PermHelpers.verifyMicPermissions
 import top.rootu.lampa.net.HttpHelper
 import java.io.File
+import java.net.URLDecoder
 import java.util.*
 import java.util.regex.Pattern
 
 
 class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWalkUpdateListener {
-    private var browser: XWalkView? = null
+    private var xwBrowser: XWalkView? = null
+    private var wvBrowser: WebView? = null
     private var mXWalkInitializer: XWalkInitializer? = null
     private var mXWalkUpdater: MyXWalkUpdater? = null
     private var mDecorView: View? = null
@@ -60,6 +71,7 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
     private lateinit var resultLauncher: ActivityResultLauncher<Intent?>
     private lateinit var speechLauncher: ActivityResultLauncher<Intent?>
 
+
     companion object {
         private const val TAG = "APP_MAIN"
         const val RESULT_ERROR = 4
@@ -68,6 +80,7 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
         const val APP_URL = "url"
         const val APP_PLAYER = "player"
         const val APP_LANG = "lang"
+        const val APP_SCHEME = "lampa:"
         var delayedVoidJsFunc = mutableListOf<List<String>>()
         var LAMPA_URL: String? = ""
         var SELECTED_PLAYER: String? = ""
@@ -92,6 +105,11 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
     override fun onCreate(savedInstanceState: Bundle?) {
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         super.onCreate(savedInstanceState)
+        onBackPressedDispatcher.addCallback {
+            if (wvBrowser?.canGoBack() == true) {
+                wvBrowser?.goBack()
+            }
+        }
         mDecorView = window.decorView
         hideSystemUI()
         @Suppress("DEPRECATION")
@@ -241,13 +259,21 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                             val dur = it.getLongExtra("duration", 0L).toInt()
                             val isEnded = it.getBooleanExtra("isEnded", pos == dur)
                             if (pos > 0 && dur > 0) {
-                                Log.i(TAG, "Playback stopped [position=$pos, duration=$dur, isEnded=$isEnded]")
+                                Log.i(
+                                    TAG,
+                                    "Playback stopped [position=$pos, duration=$dur, isEnded=$isEnded]"
+                                )
                                 resultPlayer(videoUrl, pos, dur, isEnded)
                             }
                         }
+
                         RESULT_CANCELED -> {
-                            Log.e(TAG, "Playback Error. It isn't possible to get the duration or create the playlist.")
+                            Log.e(
+                                TAG,
+                                "Playback Error. It isn't possible to get the duration or create the playlist."
+                            )
                         }
+
                         else -> {
                             Log.e(TAG, "Invalid state [resultCode=$resultCode]")
                         }
@@ -297,75 +323,144 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
             }
         }
 
-        // Must call initAsync() before anything that involves the embedding
-        // API, including invoking setContentView() with the layout which
-        // holds the XWalkView object.
-        mXWalkInitializer = XWalkInitializer(this, this)
-        mXWalkInitializer?.initAsync()
-
-        // Until onXWalkInitCompleted() is invoked, you should do nothing with the
-        // embedding API except the following:
-        // 1. Instantiate the XWalkView object
-        // 2. Call XWalkPreferences.setValue()
-        // 3. Call mXWalkView.setXXClient(), e.g., setUIClient
-        // 4. Call mXWalkView.setXXListener(), e.g., setDownloadListener
-        // 5. Call mXWalkView.addJavascriptInterface()
-        XWalkPreferences.setValue(XWalkPreferences.REMOTE_DEBUGGING, true)
-        XWalkPreferences.setValue(XWalkPreferences.ENABLE_JAVASCRIPT, true)
-        // maybe this fixes crashes on mitv2?
-        // XWalkPreferences.setValue(XWalkPreferences.ANIMATABLE_XWALK_VIEW, true);
+        initXwalk()
         setContentView(R.layout.activity_main)
+        // setupWebView()
     }
 
-    override fun onXWalkInitStarted() {}
+    @SuppressLint("SetJavaScriptEnabled", "AddJavascriptInterface")
+    fun setupWebView() {
+        // val vwBrowser = WebView(this)
+        // setContentView(vwBrowser)
+        wvBrowser = findViewById(R.id.webview)
+        val progressBar = findViewById<CircularProgressIndicator>(R.id.progressBar_cyclic)
+        val settings = wvBrowser?.settings
+        settings?.apply {
+            javaScriptEnabled = true
+            userAgentString += " lampa_client"
+            domStorageEnabled = true
+            loadWithOverviewMode = true
+            useWideViewPort = true
+            cacheMode = WebSettings.LOAD_NO_CACHE
+            builtInZoomControls = false
+
+        }
+        if (VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            settings?.mediaPlaybackRequiresUserGesture = false
+        }
+        wvBrowser?.setBackgroundColor(ContextCompat.getColor(baseContext, R.color.lampa_background))
+        wvBrowser?.setInitialScale(0)
+        wvBrowser?.addJavascriptInterface(AndroidJS(this, xwBrowser, wvBrowser), "AndroidJS")
+
+        browserInit = true
+
+        if (LAMPA_URL.isNullOrEmpty()) {
+            showUrlInputDialog()
+        } else {
+            wvBrowser?.loadUrl(LAMPA_URL!!)
+        }
+
+        wvBrowser?.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                return if (url?.startsWith(APP_SCHEME) == true) {
+                    val urlData = URLDecoder.decode(url.substring(APP_SCHEME.length), "UTF-8")
+                    //respondToData(urlData)
+                    Log.d(TAG, "lampa urlData: $urlData")
+                    true
+                } else if (Uri.parse(url).host != Uri.parse(LAMPA_URL).host) {
+                    Log.d(TAG, "lampa got external URL: $url")
+                    false
+//                    Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+//                        if (view != null) {
+//                            startActivity(view.context, this, null)
+//                        }
+//                    }
+//                    true
+                } else {
+                    false // links loaded internally
+                }
+            }
+
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
+                if (VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    if (request != null) {
+                        val url = request.url.toString()
+                        Log.d(TAG, "lampa got request, url $url")
+                    }
+                }
+                // todo: handle magnet: etc
+                return super.shouldOverrideUrlLoading(view, request)
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                view?.visibility = View.VISIBLE
+                progressBar.visibility = View.GONE
+                view?.bringToFront()
+            }
+        }
+        wvBrowser?.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
+                Log.d("WebView Console", consoleMessage.message())
+                return true
+            }
+
+            override fun onJsAlert(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                result: JsResult?
+            ): Boolean {
+                Log.d("WebView onJsAlert", "message: $message, result: $result")
+                return super.onJsAlert(view, url, message, result)
+            }
+        }
+
+        wvBrowser?.let {
+            Log.d(TAG, "wvBrowser is HWA: ${it.isHardwareAccelerated}")
+        }
+
+    }
+
+    override fun onXWalkInitStarted() {
+        if (BuildConfig.DEBUG) Log.d(TAG, "onXWalkInitStarted()")
+        setupWebView()
+    }
+
     override fun onXWalkInitCancelled() {
+        if (BuildConfig.DEBUG) Log.d(TAG, "onXWalkInitCancelled()")
         // Perform error handling here
         finish()
     }
 
     override fun onXWalkInitFailed() {
-        if (mXWalkUpdater == null) {
-            mXWalkUpdater = MyXWalkUpdater(this, this)
-        }
-        setupXWalkApkUrl()
-        mXWalkUpdater?.updateXWalkRuntime()
-    }
-
-    private fun setupXWalkApkUrl() {
-        val abi = MyXWalkEnvironment.getRuntimeAbi()
-        val apkUrl = String.format(getString(R.string.xwalk_apk_link), abi)
-        mXWalkUpdater!!.setXWalkApkUrl(apkUrl)
-    }
-
-    private fun cleanXwalkDownload() {
-        val savedFile = "xwalk_update.apk"
-        val mDownloadManager: DownloadManager? =
-            getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager?
-        val downloadDir = FileHelpers.getDownloadDir(this) // getCacheDir(context)
-        val downloadFile = File(downloadDir, savedFile)
-        if (downloadFile.isFile && downloadFile.canWrite()) downloadFile.delete()
-        val query = Query().setFilterByStatus(DownloadManager.STATUS_SUCCESSFUL)
-        mDownloadManager?.query(query)?.let {
-            while (it.moveToNext()) {
-                @SuppressLint("Range") val id =
-                    it.getLong(it.getColumnIndex(DownloadManager.COLUMN_ID))
-                @SuppressLint("Range") val localFilename =
-                    it.getString(it.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI))
-                if (localFilename.contains(savedFile)) mDownloadManager.remove(id)
+        if (BuildConfig.DEBUG) Log.d(TAG, "onXWalkInitFailed()")
+        // Skip update if browser already set (WebView)
+        if (!browserInit) {
+            if (mXWalkUpdater == null) {
+                mXWalkUpdater = MyXWalkUpdater(this, this)
             }
+            setupXWalkApkUrl()
+            mXWalkUpdater?.updateXWalkRuntime()
         }
     }
 
     override fun onXWalkInitCompleted() {
         // Clean downloads
         cleanXwalkDownload()
+        // Skip init of already set (WebView)
+        if (browserInit == true || wvBrowser != null) {
+            Log.d(TAG, "onXWalkInitCompleted() return early!")
+            return
+        }
         // Do anything with the embedding API
-        browserInit = true
-        if (browser == null) {
-            browser = findViewById(R.id.xwalkview)
-            browser?.setLayerType(View.LAYER_TYPE_NONE, null)
+        if (xwBrowser == null) {
+            xwBrowser = findViewById(R.id.xwalkview)
+            xwBrowser?.setLayerType(View.LAYER_TYPE_NONE, null)
             val progressBar = findViewById<CircularProgressIndicator>(R.id.progressBar_cyclic)
-            browser?.setResourceClient(object : XWalkResourceClient(browser) {
+            xwBrowser?.setResourceClient(object : XWalkResourceClient(xwBrowser) {
                 override fun onLoadFinished(view: XWalkView, url: String) {
                     super.onLoadFinished(view, url)
                     if (view.visibility != View.VISIBLE) {
@@ -388,14 +483,66 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                 }
             })
         }
-        browser?.userAgentString += " lampa_client"
-        HttpHelper.userAgent = browser?.userAgentString
-        browser?.setBackgroundColor(ContextCompat.getColor(baseContext, R.color.lampa_background))
-        browser?.addJavascriptInterface(AndroidJS(this, browser!!), "AndroidJS")
+        xwBrowser?.userAgentString += " lampa_client"
+        HttpHelper.userAgent = xwBrowser?.userAgentString
+        xwBrowser?.setBackgroundColor(ContextCompat.getColor(baseContext, R.color.lampa_background))
+        xwBrowser?.addJavascriptInterface(AndroidJS(this, xwBrowser, null), "AndroidJS")
+
+        browserInit = true
+
         if (LAMPA_URL.isNullOrEmpty()) {
             showUrlInputDialog()
         } else {
-            browser?.loadUrl(LAMPA_URL)
+            xwBrowser?.loadUrl(LAMPA_URL)
+        }
+    }
+
+    override fun onXWalkUpdateCancelled() {
+        Log.d(TAG, "onXWalkUpdateCancelled()")
+        // Perform error handling here
+        finish()
+    }
+
+    private fun setupXWalkApkUrl() {
+        val abi = MyXWalkEnvironment.getRuntimeAbi()
+        val apkUrl = String.format(getString(R.string.xwalk_apk_link), abi)
+        mXWalkUpdater!!.setXWalkApkUrl(apkUrl)
+    }
+
+    private fun initXwalk() {
+        // Must call initAsync() before anything that involves the embedding
+        // API, including invoking setContentView() with the layout which
+        // holds the XWalkView object.
+        mXWalkInitializer = XWalkInitializer(this, this)
+        mXWalkInitializer?.initAsync()
+
+        // Until onXWalkInitCompleted() is invoked, you should do nothing with the
+        // embedding API except the following:
+        // 1. Instantiate the XWalkView object
+        // 2. Call XWalkPreferences.setValue()
+        // 3. Call mXWalkView.setXXClient(), e.g., setUIClient
+        // 4. Call mXWalkView.setXXListener(), e.g., setDownloadListener
+        // 5. Call mXWalkView.addJavascriptInterface()
+        XWalkPreferences.setValue(XWalkPreferences.REMOTE_DEBUGGING, true)
+        XWalkPreferences.setValue(XWalkPreferences.ENABLE_JAVASCRIPT, true)
+    }
+
+    private fun cleanXwalkDownload() {
+        val savedFile = "xwalk_update.apk"
+        val mDownloadManager: DownloadManager? =
+            getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager?
+        val downloadDir = FileHelpers.getDownloadDir(this) // getCacheDir(context)
+        val downloadFile = File(downloadDir, savedFile)
+        if (downloadFile.isFile && downloadFile.canWrite()) downloadFile.delete()
+        val query = Query().setFilterByStatus(DownloadManager.STATUS_SUCCESSFUL)
+        mDownloadManager?.query(query)?.let {
+            while (it.moveToNext()) {
+                @SuppressLint("Range") val id =
+                    it.getLong(it.getColumnIndex(DownloadManager.COLUMN_ID))
+                @SuppressLint("Range") val localFilename =
+                    it.getString(it.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI))
+                if (localFilename.contains(savedFile)) mDownloadManager.remove(id)
+            }
         }
     }
 
@@ -424,7 +571,7 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
         builder.setView(container)
 
         // Set up the buttons
-        builder.setPositiveButton(R.string.save) { _: DialogInterface?, _: Int ->
+        builder.setPositiveButton(R.string.save) { dialog: DialogInterface, _: Int ->
             LAMPA_URL = input.text.toString()
             if (URL_PATTERN.matcher(LAMPA_URL!!).matches()) {
                 println("URL '$LAMPA_URL' is valid")
@@ -432,7 +579,8 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                     val editor = mSettings?.edit()
                     editor?.putString(APP_URL, LAMPA_URL)
                     editor?.apply()
-                    browser?.loadUrl(LAMPA_URL)
+                    xwBrowser?.loadUrl(LAMPA_URL)
+                    wvBrowser?.loadUrl(LAMPA_URL!!)
                     App.toast(R.string.change_url_press_back)
                 }
             } else {
@@ -440,6 +588,7 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                 App.toast(R.string.invalid_url)
                 showUrlInputDialog()
             }
+            dialog.dismiss()
             hideSystemUI()
         }
         builder.setNegativeButton(R.string.cancel) { dialog: DialogInterface, _: Int ->
@@ -481,24 +630,26 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
         return super.onKeyLongPress(keyCode, event)
     }
 
-    override fun onXWalkUpdateCancelled() {
-        // Perform error handling here
-        finish()
-    }
-
     override fun onPause() {
         super.onPause()
-        if (browserInit && browser != null) {
-            browser?.pauseTimers()
-//            browser?.onHide()
+        if (browserInit && xwBrowser != null) {
+            xwBrowser?.pauseTimers()
+        }
+        wvBrowser?.let {
+            it.onPause()
+            it.pauseTimers()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (browserInit && browser != null) {
-            browser?.onDestroy()
+        if (browserInit && xwBrowser != null) {
+            xwBrowser?.onDestroy()
         }
+//        wvBrowser?.let {
+//            it.clearCache(true)
+//            it.destroy()
+//        }
         try {
             Speech.getInstance()?.shutdown()
         } catch (_: Exception) {
@@ -508,14 +659,16 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
     override fun onResume() {
         super.onResume()
         hideSystemUI()
-
         // Try to initialize again when the user completed updating and
         // returned to current activity. The initAsync() will do nothing if
         // the initialization is proceeding or has already been completed.
         mXWalkInitializer?.initAsync()
-        if (browserInit && browser != null) {
-            browser?.resumeTimers()
-//            browser?.onShow()
+        if (browserInit && xwBrowser != null) {
+            xwBrowser?.resumeTimers()
+        }
+        wvBrowser?.let {
+            it.onResume()
+            it.resumeTimers()
         }
     }
 
@@ -530,9 +683,13 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
     }
 
     fun appExit() {
-        browser?.let {
+        xwBrowser?.let {
             it.clearCache(true)
             it.onDestroy()
+        }
+        wvBrowser?.let {
+            it.clearCache(true)
+            it.destroy()
         }
         finishAffinity() // exitProcess(1)
     }
@@ -771,7 +928,7 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                         false
                     }
 
-                    if (listUrls.size > 1 || haveQuality ) {
+                    if (listUrls.size > 1 || haveQuality) {
 
                         val firstHash =
                             ((playJSONArray[0] as JSONObject)["timeline"] as JSONObject).optString(
@@ -813,7 +970,10 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                             qualityMap.keys.forEach {
                                 intent.putStringArrayListExtra(it, qualityMap.getValue(it))
                             }
-                            intent.putExtra("groupPosition", 0) // TODO: set as defined in Lampa prefs
+                            intent.putExtra(
+                                "groupPosition",
+                                0
+                            ) // TODO: set as defined in Lampa prefs
                         } else {
                             if (listUrls.size > 0) {
                                 intent.putStringArrayListExtra("videoList", listUrls)
@@ -1157,7 +1317,7 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
     }
 
     fun runVoidJsFunc(funcName: String, params: String) {
-        if (browserInit && browser?.visibility == View.VISIBLE) {
+        if (browserInit && xwBrowser?.visibility == View.VISIBLE) {
             val js = ("(function(){"
                     + "try {"
                     + funcName + "(" + params + ");"
@@ -1166,7 +1326,7 @@ class MainActivity : AppCompatActivity(), XWalkInitListener, MyXWalkUpdater.XWal
                     + "return 'error: ' + e.message;"
                     + "}"
                     + "})();")
-            browser?.evaluateJavascript(
+            xwBrowser?.evaluateJavascript(
                 js
             ) { r: String ->
                 Log.i(
